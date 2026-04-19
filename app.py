@@ -28,17 +28,20 @@ def get_llm():
     )
 
 # -------------------------
-# HELPERS
+# CLEAN
 # -------------------------
 def clean_text(text):
     return re.sub(r"\s+", " ", text).strip()
 
+# -------------------------
+# YOUTUBE ID
+# -------------------------
 def get_video_id(url):
     match = re.search(r"(?:v=|youtu\.be/)([a-zA-Z0-9_-]+)", url)
     return match.group(1) if match else None
 
 # -------------------------
-# TRANSCRIPT
+# TRANSCRIPT API
 # -------------------------
 def get_transcript(video_id):
     try:
@@ -48,32 +51,38 @@ def get_transcript(video_id):
         return None
 
 # -------------------------
-# 🔥 WHISPER API FALLBACK (REAL SOLUTION)
+# 🔥 REAL WHISPER API
 # -------------------------
-def whisper_api_transcribe(youtube_url):
-    """
-    Replace this with:
-    - OpenAI Whisper API
-    - AssemblyAI
-    - Deepgram
-    """
+def whisper_api(url):
+    api_key = os.getenv("WHISPER_API_KEY")
 
-    # Example placeholder (YOU MUST ADD REAL API HERE)
-    API_KEY = os.getenv("WHISPER_API_KEY")
-
-    if not API_KEY:
+    if not api_key:
+        st.error("❌ WHISPER_API_KEY missing in .env")
         return None
 
-    response = requests.post(
-        "https://api.whisperapi.com/transcribe",
-        json={"url": youtube_url},
-        headers={"Authorization": f"Bearer {API_KEY}"}
-    )
+    try:
+        st.info("🧠 Sending video to Whisper API...")
 
-    if response.status_code == 200:
-        return response.json().get("text")
+        response = requests.post(
+            "https://api.openai.com/v1/audio/transcriptions",
+            headers={
+                "Authorization": f"Bearer {api_key}"
+            },
+            data={
+                "model": "whisper-1",
+                "url": url
+            }
+        )
 
-    return None
+        if response.status_code == 200:
+            return response.json().get("text")
+
+        st.error(f"Whisper API error: {response.text}")
+        return None
+
+    except Exception as e:
+        st.error(str(e))
+        return None
 
 # -------------------------
 # WEBSITE
@@ -126,15 +135,15 @@ if st.button("Summarize"):
         text = get_transcript(video_id)
 
         # -------------------------
-        # FALLBACK → WHISPER API
+        # WHISPER FALLBACK (REAL)
         # -------------------------
         if not text:
-            st.warning("No captions found → using Whisper API fallback...")
+            st.warning("No captions found → using Whisper API...")
 
-            text = whisper_api_transcribe(url)
+            text = whisper_api(url)
 
             if not text:
-                st.error("❌ No transcript available (enable Whisper API)")
+                st.error("❌ Whisper API failed or not configured")
                 st.stop()
 
     # -------------------------
@@ -157,5 +166,5 @@ if st.button("Summarize"):
 
     summary = summarize(llm, text)
 
-    st.success("Done")
+    st.success("Summary Generated")
     st.write(summary)
