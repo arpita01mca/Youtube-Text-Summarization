@@ -68,16 +68,12 @@ def get_video_id(url):
 # YOUTUBE TRANSCRIPT (FIXED API)
 # -------------------------
 @st.cache_data
+@st.cache_data
 def get_transcript(video_id):
     try:
-        transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
+        from youtube_transcript_api import YouTubeTranscriptApi
 
-        try:
-            transcript = transcript_list.find_manually_created_transcript()
-        except:
-            transcript = transcript_list.find_generated_transcript(['en'])
-
-        data = transcript.fetch()
+        data = YouTubeTranscriptApi.get_transcript(video_id)
         return " ".join([x["text"] for x in data])
 
     except Exception as e:
