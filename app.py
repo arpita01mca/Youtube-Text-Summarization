@@ -5,18 +5,15 @@ import subprocess
 import streamlit as st
 import validators
 import whisper
-from dotenv import load_dotenv
 
 from langchain_groq import ChatGroq
 from langchain_community.document_loaders import UnstructuredURLLoader
 
 # -------------------------
-# ENV
+# ENV (LOCAL ONLY)
 # -------------------------
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 os.environ["PATH"] = "/opt/homebrew/bin:" + os.environ["PATH"]
-
-load_dotenv()
 
 # -------------------------
 # UI
@@ -27,13 +24,16 @@ st.title("🦜 YouTube / Website Summarizer")
 url = st.text_input("Enter YouTube or Website URL")
 
 # -------------------------
-# LLM
+# LLM (FIXED FOR STREAMLIT CLOUD)
 # -------------------------
 @st.cache_resource
 def get_llm():
+    # ✅ works in Streamlit Cloud using Secrets
+    api_key = st.secrets["GROQ_API_KEY"]
+
     return ChatGroq(
         model="llama-3.1-8b-instant",
-        api_key=os.getenv("GROQ_API_KEY"),
+        api_key=api_key,
         temperature=0.2
     )
 
@@ -101,7 +101,7 @@ def audio_to_text(url):
         )
 
         if result.returncode != 0:
-            st.error("yt-dlp error:")
+            st.error("yt-dlp error")
             st.code(result.stderr[-1000:])
             return "ERROR"
 
@@ -114,7 +114,6 @@ def audio_to_text(url):
 
         audio_path = os.path.join(tmp_dir, audio_files[0])
 
-        # Only this message kept (clean + useful)
         st.info("🧠 Transcribing...")
 
         model = load_whisper()
@@ -169,7 +168,6 @@ if st.button("Summarize"):
         # YOUTUBE
         # -------------------------
         if "youtube.com" in url or "youtu.be" in url:
-
             text = audio_to_text(url)
 
             if text == "ERROR":
@@ -192,7 +190,7 @@ if st.button("Summarize"):
         text = clean_text(text)[:12000]
 
         # -------------------------
-        # DEBUG
+        # PREVIEW
         # -------------------------
         st.write("### 🔍 Preview")
         st.text_area("", text[:1000], height=200)
