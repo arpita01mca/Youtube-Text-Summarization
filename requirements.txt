@@ -16,3 +16,10 @@ chromadb
 validators==0.28.1
 youtube-transcript-api
 streamlit
+openai-whisper
+ffmpeg-python
+yt-dlp
+langchain
+langchain-groq
+python-dotenv
+validators
