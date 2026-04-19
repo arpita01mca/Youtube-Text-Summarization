@@ -14,7 +14,7 @@ langchain_huggingface
 openapi
 chromadb
 validators==0.28.1
-youtube-transcript-api
+youtube-transcript-api==0.6.1
 streamlit
 openai-whisper
 ffmpeg-python
