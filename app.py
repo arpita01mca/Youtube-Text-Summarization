@@ -10,10 +10,9 @@ from langchain_groq import ChatGroq
 from langchain_community.document_loaders import UnstructuredURLLoader
 
 # -------------------------
-# ENV (LOCAL ONLY)
+# ENV
 # -------------------------
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
-os.environ["PATH"] = "/opt/homebrew/bin:" + os.environ["PATH"]
 
 # -------------------------
 # UI
@@ -24,16 +23,13 @@ st.title("🦜 YouTube / Website Summarizer")
 url = st.text_input("Enter YouTube or Website URL")
 
 # -------------------------
-# LLM (FIXED FOR STREAMLIT CLOUD)
+# LLM (STREAMLIT SECRETS FIX)
 # -------------------------
 @st.cache_resource
 def get_llm():
-    # ✅ works in Streamlit Cloud using Secrets
-    api_key = st.secrets["GROQ_API_KEY"]
-
     return ChatGroq(
         model="llama-3.1-8b-instant",
-        api_key=api_key,
+        api_key=st.secrets["GROQ_API_KEY"],
         temperature=0.2
     )
 
@@ -47,11 +43,6 @@ def load_whisper():
 # -------------------------
 # HELPERS
 # -------------------------
-def get_video_id(url):
-    match = re.search(r"(?:v=|youtu\.be/)([a-zA-Z0-9_-]+)", url)
-    return match.group(1) if match else None
-
-
 def clean_text(text):
     return re.sub(r"\s+", " ", text).strip()
 
@@ -63,9 +54,10 @@ You are a strict summarizer.
 RULES:
 - Use ONLY provided text
 - Do NOT hallucinate
+- Output must be bullet points
 
 TASK:
-Write a bullet-point summary (5–8 points).
+Summarize in 5–8 bullet points.
 
 TEXT:
 {text}
@@ -74,21 +66,22 @@ TEXT:
 
 
 # -------------------------
-# AUDIO → TEXT (WHISPER)
+# YOUTUBE → AUDIO → WHISPER (CLEAN VERSION)
 # -------------------------
 def audio_to_text(url):
     try:
         tmp_dir = tempfile.mkdtemp()
         output_template = os.path.join(tmp_dir, "audio.%(ext)s")
 
+        st.info("🎬 Processing video...")
+
+        # ✅ simplified yt-dlp (no ffmpeg path, no fragile flags)
         cmd = [
             "yt-dlp",
-            "-f", "bestaudio",
+            "-f", "bestaudio/best",
             "--no-playlist",
             "--extract-audio",
             "--audio-format", "mp3",
-            "--postprocessor-args", "-t 180",
-            "--ffmpeg-location", "/opt/homebrew/bin/ffmpeg",
             "-o", output_template,
             url
         ]
@@ -100,8 +93,9 @@ def audio_to_text(url):
             timeout=120
         )
 
+        # handle YouTube block / 403
         if result.returncode != 0:
-            st.error("yt-dlp error")
+            st.error("❌ Video download failed (YouTube blocked or unavailable)")
             st.code(result.stderr[-1000:])
             return "ERROR"
 
@@ -109,7 +103,6 @@ def audio_to_text(url):
         audio_files = [f for f in files if f.endswith(".mp3")]
 
         if not audio_files:
-            st.error("No audio file found")
             return "ERROR"
 
         audio_path = os.path.join(tmp_dir, audio_files[0])
@@ -119,16 +112,7 @@ def audio_to_text(url):
         model = load_whisper()
         result = model.transcribe(audio_path)
 
-        text = result.get("text", "").strip()
-
-        if not text:
-            return "ERROR"
-
-        return text
-
-    except subprocess.TimeoutExpired:
-        st.error("⏱️ Download timeout")
-        return "ERROR"
+        return result.get("text", "").strip()
 
     except Exception as e:
         st.error(str(e))
@@ -136,7 +120,7 @@ def audio_to_text(url):
 
 
 # -------------------------
-# WEBSITE
+# WEBSITE LOADER
 # -------------------------
 def load_website(url):
     loader = UnstructuredURLLoader(
@@ -149,7 +133,7 @@ def load_website(url):
 
 
 # -------------------------
-# MAIN
+# MAIN APP
 # -------------------------
 if st.button("Summarize"):
 
@@ -171,7 +155,7 @@ if st.button("Summarize"):
             text = audio_to_text(url)
 
             if text == "ERROR":
-                st.error("❌ Failed to process video")
+                st.error("❌ Could not process video")
                 st.stop()
 
         # -------------------------
@@ -184,7 +168,7 @@ if st.button("Summarize"):
         # VALIDATION
         # -------------------------
         if not text or len(text) < 50:
-            st.error("No usable content")
+            st.error("No usable content found")
             st.stop()
 
         text = clean_text(text)[:12000]
