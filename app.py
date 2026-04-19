@@ -2,6 +2,7 @@ import os
 import re
 import streamlit as st
 import validators
+import whisper
 
 from youtube_transcript_api import YouTubeTranscriptApi
 
@@ -17,7 +18,7 @@ st.title("🦜 YouTube / Website Summarizer")
 url = st.text_input("Enter YouTube or Website URL")
 
 # -------------------------
-# LLM (STREAMLIT SECRETS)
+# LLM
 # -------------------------
 @st.cache_resource
 def get_llm():
@@ -28,7 +29,14 @@ def get_llm():
     )
 
 # -------------------------
-# CLEAN TEXT
+# WHISPER (FALLBACK)
+# -------------------------
+@st.cache_resource
+def load_whisper():
+    return whisper.load_model("base")
+
+# -------------------------
+# CLEAN
 # -------------------------
 def clean_text(text):
     return re.sub(r"\s+", " ", text).strip()
@@ -42,11 +50,8 @@ You are a strict summarizer.
 
 RULES:
 - Use ONLY provided text
-- Do NOT hallucinate
-- Output must be bullet points
-
-TASK:
-Summarize in 5–8 bullet points.
+- No hallucination
+- Bullet points only
 
 TEXT:
 {text}
@@ -54,26 +59,27 @@ TEXT:
     return llm.invoke(prompt).content
 
 # -------------------------
-# YOUTUBE TRANSCRIPT (FIXED)
+# TRANSCRIPT
 # -------------------------
-def get_youtube_text(url):
+def get_transcript(video_id):
     try:
-        match = re.search(r"(?:v=|youtu\.be/)([a-zA-Z0-9_-]+)", url)
-        if not match:
-            return "ERROR"
-
-        video_id = match.group(1)
-
         transcript = YouTubeTranscriptApi.get_transcript(video_id)
-
-        text = " ".join([t["text"] for t in transcript])
-        return text
-
-    except Exception as e:
-        return f"ERROR: {str(e)}"
+        return " ".join([t["text"] for t in transcript])
+    except:
+        return None
 
 # -------------------------
-# WEBSITE LOADER
+# WHISPER FALLBACK (SIMULATED TEXT INPUT ONLY)
+# -------------------------
+def whisper_fallback(video_id):
+    st.warning("⚠️ No transcript found. Whisper fallback required.")
+
+    st.info("👉 This requires audio extraction (not supported on all cloud deployments).")
+
+    return None  # keep safe for cloud
+
+# -------------------------
+# WEBSITE
 # -------------------------
 def load_website(url):
     loader = UnstructuredURLLoader(
@@ -85,7 +91,7 @@ def load_website(url):
     return " ".join([d.page_content for d in docs])
 
 # -------------------------
-# MAIN APP
+# MAIN
 # -------------------------
 if st.button("Summarize"):
 
@@ -93,56 +99,57 @@ if st.button("Summarize"):
         st.error("Enter URL")
         st.stop()
 
-    if not validators.url(url):
-        st.error("Invalid URL")
-        st.stop()
-
     llm = get_llm()
+    text = None
 
-    try:
-        # -------------------------
-        # YOUTUBE (FIXED APPROACH)
-        # -------------------------
-        if "youtube.com" in url or "youtu.be" in url:
+    # -------------------------
+    # YOUTUBE
+    # -------------------------
+    if "youtube.com" in url or "youtu.be" in url:
 
-            st.info("📄 Fetching transcript...")
-
-            text = get_youtube_text(url)
-
-            if text.startswith("ERROR"):
-                st.error("❌ No transcript available for this video")
-                st.stop()
-
-        # -------------------------
-        # WEBSITE
-        # -------------------------
-        else:
-            st.info("🌐 Loading website...")
-            text = load_website(url)
-
-        # -------------------------
-        # VALIDATION
-        # -------------------------
-        if not text or len(text) < 50:
-            st.error("No usable content found")
+        match = re.search(r"(?:v=|youtu\.be/)([a-zA-Z0-9_-]+)", url)
+        if not match:
+            st.error("Invalid YouTube URL")
             st.stop()
 
-        text = clean_text(text)[:12000]
+        video_id = match.group(1)
 
-        # -------------------------
-        # PREVIEW
-        # -------------------------
-        st.write("### 🔍 Preview")
-        st.text_area("", text[:1000], height=200)
+        st.info("📄 Trying transcript...")
 
-        # -------------------------
-        # SUMMARY
-        # -------------------------
-        st.info("🧠 Generating summary...")
-        summary = summarize_text(llm, text)
+        text = get_transcript(video_id)
 
-        st.success("✅ Summary Generated")
-        st.write(summary)
+        if not text:
+            st.error("❌ No transcript available for this video")
+            st.warning("👉 Whisper fallback is required (not enabled in cloud-safe mode)")
+            st.stop()
 
-    except Exception as e:
-        st.exception(e)
+    # -------------------------
+    # WEBSITE
+    # -------------------------
+    else:
+        st.info("🌐 Loading website...")
+        text = load_website(url)
+
+    # -------------------------
+    # VALIDATION
+    # -------------------------
+    if not text:
+        st.error("No usable content")
+        st.stop()
+
+    text = clean_text(text)[:12000]
+
+    # -------------------------
+    # PREVIEW
+    # -------------------------
+    st.write("### 🔍 Preview")
+    st.text_area("", text[:1000], height=200)
+
+    # -------------------------
+    # SUMMARY
+    # -------------------------
+    st.info("🧠 Generating summary...")
+    summary = summarize_text(llm, text)
+
+    st.success("✅ Summary Generated")
+    st.write(summary)
