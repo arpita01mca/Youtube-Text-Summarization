@@ -4,7 +4,7 @@ import streamlit as st
 import validators
 from dotenv import load_dotenv
 
-from youtube_transcript_api import YouTubeTranscriptApi, TranscriptsDisabled, NoTranscriptFound
+from youtube_transcript_api import YouTubeTranscriptApi
 from langchain_groq import ChatGroq
 from langchain_community.document_loaders import UnstructuredURLLoader
 
@@ -16,15 +16,11 @@ load_dotenv()
 st.set_page_config(page_title="Video Summarizer", page_icon="🦜")
 st.title("🦜 YouTube / Website Summarizer")
 
-
-# -------------------------
-# INPUT
-# -------------------------
 url = st.text_input("Enter YouTube or Website URL")
 
 
 # -------------------------
-# SAFE SECRET HANDLER (Streamlit Cloud safe)
+# SAFE SECRET HANDLER
 # -------------------------
 def get_secret(key):
     if hasattr(st, "secrets") and key in st.secrets:
@@ -40,7 +36,7 @@ def get_llm():
     api_key = get_secret("GROQ_API_KEY")
 
     if not api_key:
-        st.error("❌ GROQ_API_KEY missing in environment/secrets")
+        st.error("❌ GROQ_API_KEY missing")
         st.stop()
 
     return ChatGroq(
@@ -51,7 +47,7 @@ def get_llm():
 
 
 # -------------------------
-# YOUTUBE ID EXTRACTION (robust)
+# YOUTUBE ID EXTRACTION
 # -------------------------
 def get_video_id(url):
     patterns = [
@@ -69,17 +65,20 @@ def get_video_id(url):
 
 
 # -------------------------
-# GET TRANSCRIPT
+# YOUTUBE TRANSCRIPT (FIXED API)
 # -------------------------
 @st.cache_data
 def get_transcript(video_id):
     try:
-        data = YouTubeTranscriptApi.get_transcript(video_id)
-        return " ".join([x["text"] for x in data])
+        transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
 
-    except (TranscriptsDisabled, NoTranscriptFound):
-        st.warning("⚠️ No captions available for this video.")
-        return None
+        try:
+            transcript = transcript_list.find_manually_created_transcript()
+        except:
+            transcript = transcript_list.find_generated_transcript(['en'])
+
+        data = transcript.fetch()
+        return " ".join([x["text"] for x in data])
 
     except Exception as e:
         st.warning(f"Transcript error: {e}")
@@ -94,30 +93,29 @@ def load_website(url):
         loader = UnstructuredURLLoader(urls=[url])
         docs = loader.load()
         return " ".join([d.page_content for d in docs])
-
     except Exception as e:
         st.warning(f"Website loading failed: {e}")
         return None
 
 
 # -------------------------
-# CHUNKING
+# CHUNK TEXT
 # -------------------------
 def chunk_text(text, size=4000):
     return [text[i:i+size] for i in range(0, len(text), size)]
 
 
 # -------------------------
-# SUMMARIZER (ROBUST MULTI-CHUNK)
+# SUMMARIZER (ROBUST)
 # -------------------------
 def summarize(llm, text):
     chunks = chunk_text(text)
 
     partial_summaries = []
 
-    for i, chunk in enumerate(chunks):
+    for chunk in chunks:
         prompt = f"""
-Summarize the following content clearly in bullet points.
+Summarize the following text in clear bullet points.
 
 Rules:
 - Only use given text
@@ -131,12 +129,12 @@ TEXT:
         partial_summaries.append(partial)
 
     final_prompt = f"""
-Combine these partial summaries into one clean final summary.
+Combine these into one clean summary.
 
-Make it:
-- 5 to 10 bullet points
-- well structured
-- non repetitive
+Rules:
+- 5–10 bullet points
+- Remove repetition
+- Keep clarity
 
 CONTENT:
 {" ".join(partial_summaries)}
@@ -179,7 +177,7 @@ if st.button("Summarize"):
     # WEBSITE FLOW
     # -------------------------
     else:
-        st.info("🌐 Loading website content...")
+        st.info("🌐 Loading website...")
         text = load_website(url)
 
     # -------------------------
