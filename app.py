@@ -7,7 +7,6 @@ from dotenv import load_dotenv
 from youtube_transcript_api import YouTubeTranscriptApi, TranscriptsDisabled, NoTranscriptFound
 from langchain_groq import ChatGroq
 from langchain_community.document_loaders import UnstructuredURLLoader
-from openai import OpenAI
 
 # -------------------------
 # ENV
@@ -17,14 +16,20 @@ load_dotenv()
 st.set_page_config(page_title="Video Summarizer", page_icon="🦜")
 st.title("🦜 YouTube / Website Summarizer")
 
+
+# -------------------------
+# INPUT
+# -------------------------
 url = st.text_input("Enter YouTube or Website URL")
 
 
 # -------------------------
-# SAFE SECRET HANDLER
+# SAFE SECRET HANDLER (Streamlit Cloud safe)
 # -------------------------
 def get_secret(key):
-    return os.getenv(key) or st.secrets.get(key, None)
+    if hasattr(st, "secrets") and key in st.secrets:
+        return st.secrets[key]
+    return os.getenv(key)
 
 
 # -------------------------
@@ -35,59 +40,49 @@ def get_llm():
     api_key = get_secret("GROQ_API_KEY")
 
     if not api_key:
-        st.error("❌ GROQ_API_KEY missing")
+        st.error("❌ GROQ_API_KEY missing in environment/secrets")
         st.stop()
 
     return ChatGroq(
-        model="llama-3.1-8b-instant",
+        model="llama-3.1-70b-versatile",
         api_key=api_key,
         temperature=0.2
     )
 
 
 # -------------------------
-# VIDEO ID
+# YOUTUBE ID EXTRACTION (robust)
 # -------------------------
 def get_video_id(url):
-    match = re.search(r"(?:v=|youtu\.be/)([a-zA-Z0-9_-]+)", url)
-    return match.group(1) if match else None
+    patterns = [
+        r"v=([a-zA-Z0-9_-]+)",
+        r"youtu\.be/([a-zA-Z0-9_-]+)",
+        r"shorts/([a-zA-Z0-9_-]+)"
+    ]
+
+    for pattern in patterns:
+        match = re.search(pattern, url)
+        if match:
+            return match.group(1)
+
+    return None
 
 
 # -------------------------
-# YOUTUBE TRANSCRIPT (FAST PATH)
+# GET TRANSCRIPT
 # -------------------------
+@st.cache_data
 def get_transcript(video_id):
     try:
         data = YouTubeTranscriptApi.get_transcript(video_id)
         return " ".join([x["text"] for x in data])
+
     except (TranscriptsDisabled, NoTranscriptFound):
-        return None
-    except Exception:
-        return None
-
-
-# -------------------------
-# WHISPER API FALLBACK (CLOUD SAFE)
-# -------------------------
-def whisper_api_transcribe(video_url):
-    try:
-        api_key = get_secret("OPENAI_API_KEY")
-
-        if not api_key:
-            return None
-
-        client = OpenAI(api_key=api_key)
-
-        st.info("🎧 Transcribing via Whisper API...")
-
-        # NOTE:
-        # OpenAI Whisper API does NOT accept YouTube URL directly
-        # so we cannot fully implement without backend downloader
-        # returning None safely for cloud stability
-
+        st.warning("⚠️ No captions available for this video.")
         return None
 
-    except Exception:
+    except Exception as e:
+        st.warning(f"Transcript error: {e}")
         return None
 
 
@@ -95,43 +90,68 @@ def whisper_api_transcribe(video_url):
 # WEBSITE LOADER
 # -------------------------
 def load_website(url):
-    loader = UnstructuredURLLoader(
-        urls=[url],
-        ssl_verify=False,
-        headers={"User-Agent": "Mozilla/5.0"}
-    )
-    docs = loader.load()
-    return " ".join([d.page_content for d in docs])
+    try:
+        loader = UnstructuredURLLoader(urls=[url])
+        docs = loader.load()
+        return " ".join([d.page_content for d in docs])
+
+    except Exception as e:
+        st.warning(f"Website loading failed: {e}")
+        return None
 
 
 # -------------------------
-# SUMMARIZER
+# CHUNKING
+# -------------------------
+def chunk_text(text, size=4000):
+    return [text[i:i+size] for i in range(0, len(text), size)]
+
+
+# -------------------------
+# SUMMARIZER (ROBUST MULTI-CHUNK)
 # -------------------------
 def summarize(llm, text):
-    prompt = f"""
-You are a strict summarizer.
+    chunks = chunk_text(text)
 
-RULES:
-- Use ONLY provided text
+    partial_summaries = []
+
+    for i, chunk in enumerate(chunks):
+        prompt = f"""
+Summarize the following content clearly in bullet points.
+
+Rules:
+- Only use given text
 - No external knowledge
-- No hallucination
-
-TASK:
-Give 5–8 bullet points summary.
+- Be concise
 
 TEXT:
-{text}
+{chunk}
 """
-    return llm.invoke(prompt).content
+        partial = llm.invoke(prompt).content
+        partial_summaries.append(partial)
+
+    final_prompt = f"""
+Combine these partial summaries into one clean final summary.
+
+Make it:
+- 5 to 10 bullet points
+- well structured
+- non repetitive
+
+CONTENT:
+{" ".join(partial_summaries)}
+"""
+
+    return llm.invoke(final_prompt).content
 
 
 # -------------------------
-# MAIN
+# MAIN APP
 # -------------------------
 if st.button("Summarize"):
 
     if not url:
-        st.error("Enter URL")
+        st.error("Please enter a URL")
         st.stop()
 
     if not validators.url(url):
@@ -139,7 +159,7 @@ if st.button("Summarize"):
         st.stop()
 
     llm = get_llm()
-    text = ""
+    text = None
 
     # -------------------------
     # YOUTUBE FLOW
@@ -153,23 +173,13 @@ if st.button("Summarize"):
             st.stop()
 
         st.info("📄 Fetching transcript...")
-
         text = get_transcript(video_id)
-
-        # fallback attempt
-        if not text:
-            st.warning("No captions found → trying Whisper API fallback")
-            text = whisper_api_transcribe(url)
-
-        if not text:
-            st.error("❌ No transcript available for this video")
-            st.stop()
 
     # -------------------------
     # WEBSITE FLOW
     # -------------------------
     else:
-        st.info("🌐 Loading website...")
+        st.info("🌐 Loading website content...")
         text = load_website(url)
 
     # -------------------------
@@ -180,20 +190,16 @@ if st.button("Summarize"):
         st.stop()
 
     # -------------------------
-    # CLEAN
-    # -------------------------
-    text = re.sub(r"\s+", " ", text).strip()[:12000]
-
-    # -------------------------
     # PREVIEW
     # -------------------------
-    st.write("### 🔍 Preview")
+    st.subheader("🔍 Preview")
     st.text_area("", text[:1000], height=200)
 
     # -------------------------
     # SUMMARY
     # -------------------------
-    summary = summarize(llm, text)
+    with st.spinner("🧠 Generating summary..."):
+        summary = summarize(llm, text)
 
     st.success("✅ Summary Generated")
     st.write(summary)
