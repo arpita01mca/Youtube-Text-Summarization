@@ -4,14 +4,11 @@ import streamlit as st
 import validators
 from dotenv import load_dotenv
 
-from youtube_transcript_api import YouTubeTranscriptApi, TranscriptsDisabled, NoTranscriptFound
+from youtube_transcript_api import YouTubeTranscriptApi
 
 from langchain_groq import ChatGroq
 from langchain_community.document_loaders import UnstructuredURLLoader
 
-# -------------------------
-# ENV
-# -------------------------
 load_dotenv()
 
 st.set_page_config(page_title="Video Summarizer", page_icon="🦜")
@@ -21,21 +18,21 @@ url = st.text_input("Enter YouTube or Website URL")
 
 
 # -------------------------
-# SAFE ENV ACCESS (LOCAL + CLOUD)
+# ENV
 # -------------------------
 def get_secret(key):
     return os.getenv(key) or st.secrets.get(key, None)
 
 
 # -------------------------
-# LLM (FIXED)
+# LLM
 # -------------------------
 @st.cache_resource
 def get_llm():
     api_key = get_secret("GROQ_API_KEY")
 
     if not api_key:
-        st.error("❌ GROQ_API_KEY missing in environment or Streamlit secrets")
+        st.error("Missing GROQ_API_KEY")
         st.stop()
 
     return ChatGroq(
@@ -46,34 +43,43 @@ def get_llm():
 
 
 # -------------------------
-# HELPERS
+# VIDEO ID
 # -------------------------
 def get_video_id(url):
     match = re.search(r"(?:v=|youtu\.be/)([a-zA-Z0-9_-]+)", url)
     return match.group(1) if match else None
 
 
-def clean_text(text):
-    return re.sub(r"\s+", " ", text).strip()
-
-
 # -------------------------
-# YOUTUBE TRANSCRIPT (PRIMARY METHOD)
+# TRANSCRIPT (PRIMARY)
 # -------------------------
 def get_transcript(video_id):
     try:
         data = YouTubeTranscriptApi.get_transcript(video_id)
         return " ".join([x["text"] for x in data])
-
-    except (TranscriptsDisabled, NoTranscriptFound):
-        return None
-
-    except Exception:
+    except:
         return None
 
 
 # -------------------------
-# WEBSITE LOADER
+# WHISPER API (OPTIONAL FALLBACK)
+# -------------------------
+def whisper_api_transcribe(video_url):
+    """
+    ⚠️ Placeholder for real Whisper API (OpenAI / AssemblyAI)
+    """
+    api_key = get_secret("OPENAI_API_KEY")
+
+    if not api_key:
+        return None
+
+    # NOTE: You would implement actual API call here
+    # returning None for now if not configured
+    return None
+
+
+# -------------------------
+# WEBSITE
 # -------------------------
 def load_website(url):
     loader = UnstructuredURLLoader(
@@ -86,21 +92,12 @@ def load_website(url):
 
 
 # -------------------------
-# SUMMARY (BULLET POINTS)
+# SUMMARY
 # -------------------------
 def summarize(llm, text):
     prompt = f"""
-You are a professional summarizer.
+Summarize in 5–8 bullet points:
 
-RULES:
-- Use ONLY the given text
-- No hallucination
-- No external knowledge
-
-TASK:
-Convert into 5–8 clear bullet points.
-
-TEXT:
 {text}
 """
     return llm.invoke(prompt).content
@@ -112,7 +109,7 @@ TEXT:
 if st.button("Summarize"):
 
     if not url:
-        st.error("Please enter a URL")
+        st.error("Enter URL")
         st.stop()
 
     if not validators.url(url):
@@ -133,8 +130,14 @@ if st.button("Summarize"):
 
         text = get_transcript(video_id)
 
+        # fallback
         if not text:
-            st.error("❌ No transcript available for this video")
+            st.warning("No captions found → trying Whisper API fallback")
+
+            text = whisper_api_transcribe(url)
+
+        if not text:
+            st.error("❌ No transcript available (enable Whisper API for full support)")
             st.stop()
 
     # -------------------------
@@ -144,24 +147,14 @@ if st.button("Summarize"):
         text = load_website(url)
 
     # -------------------------
-    # VALIDATION
+    # CLEAN
     # -------------------------
-    if not text or len(text.strip()) < 50:
-        st.error("No usable content found")
-        st.stop()
+    text = re.sub(r"\s+", " ", text).strip()[:12000]
 
-    text = clean_text(text)[:12000]
-
-    # -------------------------
-    # PREVIEW
-    # -------------------------
-    st.write("### 🔍 Preview")
+    st.write("### Preview")
     st.text_area("", text[:1000], height=200)
 
-    # -------------------------
-    # SUMMARY
-    # -------------------------
     summary = summarize(llm, text)
 
-    st.success("✅ Summary Generated")
+    st.success("Summary Generated")
     st.write(summary)
