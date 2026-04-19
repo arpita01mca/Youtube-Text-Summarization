@@ -65,19 +65,16 @@ def get_video_id(url):
 
 
 # -------------------------
-# YOUTUBE TRANSCRIPT (FIXED API)
+# YOUTUBE TRANSCRIPT (FIXED + SAFE)
 # -------------------------
-@st.cache_data
 @st.cache_data
 def get_transcript(video_id):
     try:
-        from youtube_transcript_api import YouTubeTranscriptApi
-
         data = YouTubeTranscriptApi.get_transcript(video_id)
         return " ".join([x["text"] for x in data])
 
     except Exception as e:
-        st.warning(f"Transcript error: {e}")
+        st.warning(f"⚠️ Transcript error: {e}")
         return None
 
 
@@ -95,9 +92,11 @@ def load_website(url):
 
 
 # -------------------------
-# CHUNK TEXT
+# CHUNK TEXT (SAFE)
 # -------------------------
 def chunk_text(text, size=4000):
+    if not text:
+        return []
     return [text[i:i+size] for i in range(0, len(text), size)]
 
 
@@ -105,7 +104,14 @@ def chunk_text(text, size=4000):
 # SUMMARIZER (ROBUST)
 # -------------------------
 def summarize(llm, text):
+
+    if not text:
+        return "No content to summarize."
+
     chunks = chunk_text(text)
+
+    if not chunks:
+        return "No valid chunks found."
 
     partial_summaries = []
 
@@ -125,7 +131,7 @@ TEXT:
         partial_summaries.append(partial)
 
     final_prompt = f"""
-Combine these into one clean summary.
+Combine these summaries into one clean final output.
 
 Rules:
 - 5–10 bullet points
@@ -177,7 +183,7 @@ if st.button("Summarize"):
         text = load_website(url)
 
     # -------------------------
-    # VALIDATION
+    # FINAL VALIDATION
     # -------------------------
     if not text or len(text.strip()) < 50:
         st.error("❌ No usable content found")
