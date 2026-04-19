@@ -1,18 +1,12 @@
 import os
 import re
-import tempfile
-import subprocess
 import streamlit as st
 import validators
-import whisper
+
+from youtube_transcript_api import YouTubeTranscriptApi
 
 from langchain_groq import ChatGroq
 from langchain_community.document_loaders import UnstructuredURLLoader
-
-# -------------------------
-# ENV
-# -------------------------
-os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 
 # -------------------------
 # UI
@@ -23,7 +17,7 @@ st.title("🦜 YouTube / Website Summarizer")
 url = st.text_input("Enter YouTube or Website URL")
 
 # -------------------------
-# LLM (STREAMLIT SECRETS FIX)
+# LLM (STREAMLIT SECRETS)
 # -------------------------
 @st.cache_resource
 def get_llm():
@@ -34,19 +28,14 @@ def get_llm():
     )
 
 # -------------------------
-# WHISPER
-# -------------------------
-@st.cache_resource
-def load_whisper():
-    return whisper.load_model("base")
-
-# -------------------------
-# HELPERS
+# CLEAN TEXT
 # -------------------------
 def clean_text(text):
     return re.sub(r"\s+", " ", text).strip()
 
-
+# -------------------------
+# SUMMARY
+# -------------------------
 def summarize_text(llm, text):
     prompt = f"""
 You are a strict summarizer.
@@ -64,60 +53,24 @@ TEXT:
 """
     return llm.invoke(prompt).content
 
-
 # -------------------------
-# YOUTUBE → AUDIO → WHISPER (CLEAN VERSION)
+# YOUTUBE TRANSCRIPT (FIXED)
 # -------------------------
-def audio_to_text(url):
+def get_youtube_text(url):
     try:
-        tmp_dir = tempfile.mkdtemp()
-        output_template = os.path.join(tmp_dir, "audio.%(ext)s")
-
-        st.info("🎬 Processing video...")
-
-        # ✅ simplified yt-dlp (no ffmpeg path, no fragile flags)
-        cmd = [
-            "yt-dlp",
-            "-f", "bestaudio/best",
-            "--no-playlist",
-            "--extract-audio",
-            "--audio-format", "mp3",
-            "-o", output_template,
-            url
-        ]
-
-        result = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            timeout=120
-        )
-
-        # handle YouTube block / 403
-        if result.returncode != 0:
-            st.error("❌ Video download failed (YouTube blocked or unavailable)")
-            st.code(result.stderr[-1000:])
+        match = re.search(r"(?:v=|youtu\.be/)([a-zA-Z0-9_-]+)", url)
+        if not match:
             return "ERROR"
 
-        files = os.listdir(tmp_dir)
-        audio_files = [f for f in files if f.endswith(".mp3")]
+        video_id = match.group(1)
 
-        if not audio_files:
-            return "ERROR"
+        transcript = YouTubeTranscriptApi.get_transcript(video_id)
 
-        audio_path = os.path.join(tmp_dir, audio_files[0])
-
-        st.info("🧠 Transcribing...")
-
-        model = load_whisper()
-        result = model.transcribe(audio_path)
-
-        return result.get("text", "").strip()
+        text = " ".join([t["text"] for t in transcript])
+        return text
 
     except Exception as e:
-        st.error(str(e))
-        return "ERROR"
-
+        return f"ERROR: {str(e)}"
 
 # -------------------------
 # WEBSITE LOADER
@@ -130,7 +83,6 @@ def load_website(url):
     )
     docs = loader.load()
     return " ".join([d.page_content for d in docs])
-
 
 # -------------------------
 # MAIN APP
@@ -149,19 +101,23 @@ if st.button("Summarize"):
 
     try:
         # -------------------------
-        # YOUTUBE
+        # YOUTUBE (FIXED APPROACH)
         # -------------------------
         if "youtube.com" in url or "youtu.be" in url:
-            text = audio_to_text(url)
 
-            if text == "ERROR":
-                st.error("❌ Could not process video")
+            st.info("📄 Fetching transcript...")
+
+            text = get_youtube_text(url)
+
+            if text.startswith("ERROR"):
+                st.error("❌ No transcript available for this video")
                 st.stop()
 
         # -------------------------
         # WEBSITE
         # -------------------------
         else:
+            st.info("🌐 Loading website...")
             text = load_website(url)
 
         # -------------------------
@@ -182,6 +138,7 @@ if st.button("Summarize"):
         # -------------------------
         # SUMMARY
         # -------------------------
+        st.info("🧠 Generating summary...")
         summary = summarize_text(llm, text)
 
         st.success("✅ Summary Generated")
