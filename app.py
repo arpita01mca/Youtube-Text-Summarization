@@ -63,13 +63,13 @@ TEXT:
 
 
 # -------------------------
-# YOUTUBE TRANSCRIPT (ROBUST)
+# YOUTUBE TRANSCRIPT
 # -------------------------
 def get_transcript(url):
     try:
         video_id = get_video_id(url)
         if not video_id:
-            return "ERROR"
+            return None
 
         transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
 
@@ -79,18 +79,14 @@ def get_transcript(url):
             transcript = transcript_list.find_generated_transcript(['en'])
 
         data = transcript.fetch()
-        text = " ".join([t["text"] for t in data])
+        return " ".join([t["text"] for t in data])
 
-        return text
-
-    except (TranscriptsDisabled, NoTranscriptFound, VideoUnavailable):
-        return "ERROR"
     except Exception:
-        return "ERROR"
+        return None
 
 
 # -------------------------
-# WEBSITE LOADER
+# WEBSITE
 # -------------------------
 def load_website(url):
     loader = UnstructuredURLLoader(
@@ -103,7 +99,7 @@ def load_website(url):
 
 
 # -------------------------
-# MAIN APP
+# MAIN
 # -------------------------
 if st.button("Summarize"):
 
@@ -117,46 +113,44 @@ if st.button("Summarize"):
 
     llm = get_llm()
 
-    try:
-        # -------------------------
-        # YOUTUBE
-        # -------------------------
-        if "youtube.com" in url or "youtu.be" in url:
+    text = None
 
-            text = get_transcript(url)
+    # -------------------------
+    # YOUTUBE
+    # -------------------------
+    if "youtube.com" in url or "youtu.be" in url:
+        text = get_transcript(url)
 
-            if text == "ERROR":
-                st.error("❌ No transcript available for this video")
-                st.stop()
-
-        # -------------------------
-        # WEBSITE
-        # -------------------------
-        else:
-            text = load_website(url)
-
-        # -------------------------
-        # VALIDATION
-        # -------------------------
-        if not text or len(text) < 50:
-            st.error("No usable content found")
+        if not text:
+            st.warning("⚠️ No transcript found for this video.")
+            st.info("👉 Trying website mode or suggest another video with captions.")
             st.stop()
 
-        text = clean_text(text)[:12000]
+    # -------------------------
+    # WEBSITE
+    # -------------------------
+    else:
+        text = load_website(url)
 
-        # -------------------------
-        # PREVIEW
-        # -------------------------
-        st.write("### 🔍 Preview")
-        st.text_area("", text[:1000], height=200)
+    # -------------------------
+    # VALIDATION
+    # -------------------------
+    if not text or len(text) < 50:
+        st.error("No usable content found")
+        st.stop()
 
-        # -------------------------
-        # SUMMARY
-        # -------------------------
-        summary = summarize_text(llm, text)
+    text = clean_text(text)[:12000]
 
-        st.success("✅ Summary Generated")
-        st.write(summary)
+    # -------------------------
+    # PREVIEW
+    # -------------------------
+    st.write("### 🔍 Preview")
+    st.text_area("", text[:1000], height=200)
 
-    except Exception as e:
-        st.exception(e)
+    # -------------------------
+    # SUMMARY
+    # -------------------------
+    summary = summarize_text(llm, text)
+
+    st.success("✅ Summary Generated")
+    st.write(summary)
