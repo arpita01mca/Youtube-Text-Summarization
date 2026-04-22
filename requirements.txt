@@ -3,6 +3,7 @@ langchain
 langchain-community
 langchain-groq
 yt-dlp
-openai-whisper
 validators
 python-dotenv
+beautifulsoup4
+requests
