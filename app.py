@@ -2,18 +2,19 @@ import os
 import re
 import streamlit as st
 import validators
-import yt_dlp
-import whisper
+import requests
+from bs4 import BeautifulSoup
 from dotenv import load_dotenv
 
 from langchain_groq import ChatGroq
+from youtube_transcript_api import YouTubeTranscriptApi
 
 # -------------------------
-# CONFIG
+# ENV
 # -------------------------
 load_dotenv()
 
-st.set_page_config(page_title="Video Summarizer", page_icon="🦜")
+st.set_page_config(page_title="Summarizer", page_icon="🦜")
 st.title("🦜 YouTube / Website Summarizer")
 
 url = st.text_input("Enter YouTube or Website URL")
@@ -31,50 +32,61 @@ def get_llm():
 
 
 # -------------------------
-# VIDEO DOWNLOAD + TRANSCRIBE (WHISPER)
+# YOUTUBE ID
 # -------------------------
-@st.cache_resource
-def load_whisper():
-    return whisper.load_model("base")
+def get_video_id(url):
+    patterns = [
+        r"v=([a-zA-Z0-9_-]{11})",
+        r"youtu\.be/([a-zA-Z0-9_-]{11})",
+        r"embed/([a-zA-Z0-9_-]{11})"
+    ]
+
+    for p in patterns:
+        match = re.search(p, url)
+        if match:
+            return match.group(1)
+
+    return None
 
 
-def transcribe_video(url):
+# -------------------------
+# YOUTUBE TRANSCRIPT (SAFE)
+# -------------------------
+def get_youtube_text(url):
     try:
-        audio_file = "audio.mp3"
+        video_id = get_video_id(url)
+        if not video_id:
+            return None
 
-        ydl_opts = {
-            "format": "bestaudio/best",
-            "outtmpl": "audio.%(ext)s",
-            "quiet": True,
-        }
+        transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
 
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            ydl.download([url])
+        try:
+            transcript = transcript_list.find_transcript(['en'])
+        except:
+            transcript = next(iter(transcript_list))
 
-        model = load_whisper()
-        result = model.transcribe(audio_file)
+        data = transcript.fetch()
 
-        if os.path.exists(audio_file):
-            os.remove(audio_file)
-
-        return result["text"]
+        return " ".join([t["text"] for t in data])
 
     except Exception as e:
-        st.error(f"Transcription error: {e}")
+        print("Transcript error:", e)
         return None
 
 
 # -------------------------
-# WEBSITE LOADER (simple fallback)
+# WEBSITE SCRAPER
 # -------------------------
-def load_website(url):
-    import requests
-    from bs4 import BeautifulSoup
+def get_website_text(url):
+    try:
+        r = requests.get(url, headers={"User-Agent": "Mozilla/5.0"})
+        soup = BeautifulSoup(r.text, "html.parser")
 
-    r = requests.get(url, headers={"User-Agent": "Mozilla/5.0"})
-    soup = BeautifulSoup(r.text, "html.parser")
+        return soup.get_text(separator=" ", strip=True)
 
-    return soup.get_text(separator=" ", strip=True)
+    except Exception as e:
+        print("Website error:", e)
+        return None
 
 
 # -------------------------
@@ -84,14 +96,14 @@ def summarize(llm, text):
     prompt = f"""
 You are a strict summarizer.
 
-Rules:
+RULES:
 - Only use provided text
-- Do not hallucinate
+- Do NOT hallucinate
 
-Task:
+TASK:
 Give 5–8 bullet points summary.
 
-Text:
+TEXT:
 {text}
 """
     return llm.invoke(prompt).content
@@ -103,7 +115,7 @@ Text:
 if st.button("Summarize"):
 
     if not url:
-        st.error("Enter URL")
+        st.error("Enter a URL")
         st.stop()
 
     if not validators.url(url):
@@ -112,30 +124,37 @@ if st.button("Summarize"):
 
     llm = get_llm()
 
+    text = None
+
     # -------------------------
     # YOUTUBE
     # -------------------------
     if "youtube.com" in url or "youtu.be" in url:
 
-        st.info("Downloading & transcribing video (this may take ~30–60s)...")
+        st.info("Fetching YouTube transcript...")
 
-        text = transcribe_video(url)
+        text = get_youtube_text(url)
 
         if not text:
-            st.error("❌ Could not transcribe video")
+            st.error("❌ No transcript available for this video")
             st.stop()
 
     # -------------------------
     # WEBSITE
     # -------------------------
     else:
-        st.info("Loading website...")
-        text = load_website(url)
+        st.info("Fetching website content...")
+
+        text = get_website_text(url)
+
+        if not text:
+            st.error("❌ Could not load website")
+            st.stop()
 
     # -------------------------
     # VALIDATION
     # -------------------------
-    if not text or len(text.strip()) < 20:
+    if len(text.strip()) < 20:
         st.error("No usable content found")
         st.stop()
 
@@ -144,6 +163,9 @@ if st.button("Summarize"):
     st.write("### Preview")
     st.text_area("Content", text[:1000], height=200)
 
+    # -------------------------
+    # SUMMARY
+    # -------------------------
     with st.spinner("Summarizing..."):
         summary = summarize(llm, text)
 
