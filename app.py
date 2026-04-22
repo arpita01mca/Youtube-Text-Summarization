@@ -1,21 +1,16 @@
 import os
 import re
-import tempfile
-import subprocess
 import streamlit as st
 import validators
-import whisper
 from dotenv import load_dotenv
 
 from langchain_groq import ChatGroq
 from langchain_community.document_loaders import UnstructuredURLLoader
+from youtube_transcript_api import YouTubeTranscriptApi
 
 # -------------------------
 # ENV
 # -------------------------
-os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
-os.environ["PATH"] = "/opt/homebrew/bin:" + os.environ["PATH"]
-
 load_dotenv()
 
 # -------------------------
@@ -36,13 +31,6 @@ def get_llm():
         api_key=os.getenv("GROQ_API_KEY"),
         temperature=0.2
     )
-
-# -------------------------
-# WHISPER
-# -------------------------
-@st.cache_resource
-def load_whisper():
-    return whisper.load_model("base")
 
 # -------------------------
 # HELPERS
@@ -74,65 +62,22 @@ TEXT:
 
 
 # -------------------------
-# AUDIO → TEXT (WHISPER)
+# YOUTUBE TRANSCRIPT
 # -------------------------
-def audio_to_text(url):
+def get_transcript(url):
     try:
-        tmp_dir = tempfile.mkdtemp()
-        output_template = os.path.join(tmp_dir, "audio.%(ext)s")
+        video_id = get_video_id(url)
 
-        cmd = [
-            "yt-dlp",
-            "-f", "bestaudio",
-            "--no-playlist",
-            "--extract-audio",
-            "--audio-format", "mp3",
-            "--postprocessor-args", "-t 180",
-            "--ffmpeg-location", "/opt/homebrew/bin/ffmpeg",
-            "-o", output_template,
-            url
-        ]
-
-        result = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            timeout=120
-        )
-
-        if result.returncode != 0:
-            st.error("yt-dlp error:")
-            st.code(result.stderr[-1000:])
+        if not video_id:
             return "ERROR"
 
-        files = os.listdir(tmp_dir)
-        audio_files = [f for f in files if f.endswith(".mp3")]
+        transcript = YouTubeTranscriptApi.get_transcript(video_id)
 
-        if not audio_files:
-            st.error("No audio file found")
-            return "ERROR"
-
-        audio_path = os.path.join(tmp_dir, audio_files[0])
-
-        # Only this message kept (clean + useful)
-        st.info("🧠 Transcribing...")
-
-        model = load_whisper()
-        result = model.transcribe(audio_path)
-
-        text = result.get("text", "").strip()
-
-        if not text:
-            return "ERROR"
-
-        return text
-
-    except subprocess.TimeoutExpired:
-        st.error("⏱️ Download timeout")
-        return "ERROR"
+        text = " ".join([t["text"] for t in transcript])
+        return text.strip()
 
     except Exception as e:
-        st.error(str(e))
+        st.warning("⚠️ Transcript not available")
         return "ERROR"
 
 
@@ -170,10 +115,10 @@ if st.button("Summarize"):
         # -------------------------
         if "youtube.com" in url or "youtu.be" in url:
 
-            text = audio_to_text(url)
+            text = get_transcript(url)
 
             if text == "ERROR":
-                st.error("❌ Failed to process video")
+                st.error("❌ No transcript available for this video")
                 st.stop()
 
         # -------------------------
@@ -192,7 +137,7 @@ if st.button("Summarize"):
         text = clean_text(text)[:12000]
 
         # -------------------------
-        # DEBUG
+        # PREVIEW
         # -------------------------
         st.write("### 🔍 Preview")
         st.text_area("", text[:1000], height=200)
