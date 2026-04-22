@@ -1,5 +1,7 @@
 import os
 import re
+import tempfile
+import subprocess
 import streamlit as st
 import validators
 from dotenv import load_dotenv
@@ -7,16 +9,12 @@ from dotenv import load_dotenv
 from langchain_groq import ChatGroq
 from langchain_community.document_loaders import UnstructuredURLLoader
 from youtube_transcript_api import YouTubeTranscriptApi
-from youtube_transcript_api._errors import TranscriptsDisabled, NoTranscriptFound, VideoUnavailable
 
 # -------------------------
 # ENV
 # -------------------------
 load_dotenv()
 
-# -------------------------
-# UI
-# -------------------------
 st.set_page_config(page_title="Video Summarizer", page_icon="🦜")
 st.title("🦜 YouTube / Website Summarizer")
 
@@ -63,7 +61,7 @@ TEXT:
 
 
 # -------------------------
-# YOUTUBE TRANSCRIPT
+# 1. TRY TRANSCRIPT
 # -------------------------
 def get_transcript(url):
     try:
@@ -71,17 +69,41 @@ def get_transcript(url):
         if not video_id:
             return None
 
-        transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
-
-        try:
-            transcript = transcript_list.find_manually_created_transcript(['en'])
-        except:
-            transcript = transcript_list.find_generated_transcript(['en'])
-
-        data = transcript.fetch()
+        data = YouTubeTranscriptApi.get_transcript(video_id)
         return " ".join([t["text"] for t in data])
 
-    except Exception:
+    except:
+        return None
+
+
+# -------------------------
+# 2. WHISPER FALLBACK (yt-dlp)
+# -------------------------
+def get_audio_transcript(url):
+    try:
+        import whisper
+
+        tmp_dir = tempfile.mkdtemp()
+        audio_path = os.path.join(tmp_dir, "audio.mp3")
+
+        cmd = [
+            "yt-dlp",
+            "-f", "bestaudio",
+            "--extract-audio",
+            "--audio-format", "mp3",
+            "-o", audio_path,
+            url
+        ]
+
+        subprocess.run(cmd, check=True)
+
+        model = whisper.load_model("base")
+        result = model.transcribe(audio_path)
+
+        return result["text"]
+
+    except Exception as e:
+        st.error(f"Whisper failed: {e}")
         return None
 
 
@@ -112,19 +134,20 @@ if st.button("Summarize"):
         st.stop()
 
     llm = get_llm()
-
     text = None
 
     # -------------------------
-    # YOUTUBE
+    # YOUTUBE PIPELINE
     # -------------------------
     if "youtube.com" in url or "youtu.be" in url:
+
+        st.info("Trying transcript API...")
+
         text = get_transcript(url)
 
         if not text:
-            st.warning("⚠️ No transcript found for this video.")
-            st.info("👉 Trying website mode or suggest another video with captions.")
-            st.stop()
+            st.warning("Transcript not available → using Whisper fallback...")
+            text = get_audio_transcript(url)
 
     # -------------------------
     # WEBSITE
