@@ -26,6 +26,7 @@ st.title("🦜 YouTube / Website Summarizer")
 
 url = st.text_input("Enter YouTube or Website URL")
 
+
 # -------------------------
 # LLM
 # -------------------------
@@ -36,8 +37,9 @@ def get_llm():
         temperature=0.2
     )
 
+
 # -------------------------
-# HELPERS
+# VIDEO ID
 # -------------------------
 def get_video_id(url):
     patterns = [
@@ -50,11 +52,12 @@ def get_video_id(url):
         match = re.search(p, url)
         if match:
             return match.group(1)
+
     return None
 
 
 # -------------------------
-# PRIMARY TRANSCRIPT METHOD
+# METHOD 1: transcript API
 # -------------------------
 def get_transcript_api(video_id):
     try:
@@ -75,33 +78,45 @@ def get_transcript_api(video_id):
 
 
 # -------------------------
-# FALLBACK (Streamlit Cloud SAFE)
+# METHOD 2: yt-dlp fallback (IMPORTANT FIX)
 # -------------------------
 def get_transcript_fallback(url):
     try:
         ydl_opts = {
-            "skip_download": True,
             "quiet": True,
+            "skip_download": True,
             "writesubtitles": True,
             "writeautomaticsub": True,
-            "subtitleslangs": ["en"]
+            "subtitleslangs": ["en"],
         }
 
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=False)
 
-        caps = info.get("automatic_captions") or info.get("subtitles")
+        subs = info.get("subtitles") or info.get("automatic_captions")
 
-        if not caps or "en" not in caps:
+        if not subs or "en" not in subs:
             return None
 
-        segments = caps["en"]
-        return " ".join([s.get("text", "") for s in segments])
+        entries = subs["en"]
 
-    except Exception:
+        text = []
+        for item in entries:
+            if isinstance(item, dict):
+                text.append(item.get("text", ""))
+            else:
+                text.append(str(item))
+
+        return " ".join(text)
+
+    except Exception as e:
+        print("yt-dlp error:", e)
         return None
 
 
+# -------------------------
+# UNIFIED TRANSCRIPT
+# -------------------------
 def get_transcript(url):
     video_id = get_video_id(url)
     if not video_id:
@@ -150,12 +165,12 @@ TEXT:
 
 
 # -------------------------
-# MAIN
+# MAIN APP
 # -------------------------
 if st.button("Summarize"):
 
     if not url:
-        st.error("Enter a URL")
+        st.error("Please enter a URL")
         st.stop()
 
     if not validators.url(url):
@@ -173,8 +188,8 @@ if st.button("Summarize"):
 
         text = get_transcript(url)
 
-        if not text:
-            st.error("❌ No transcript available (even fallback failed)")
+        if not text or len(text.strip()) < 20:
+            st.error("❌ No transcript available for this video")
             st.stop()
 
     # -------------------------
@@ -185,9 +200,9 @@ if st.button("Summarize"):
         text = load_website(url)
 
     # -------------------------
-    # VALIDATION
+    # FINAL CHECK
     # -------------------------
-    if not text or len(text) < 50:
+    if not text or len(text.strip()) < 20:
         st.error("No usable content found")
         st.stop()
 
