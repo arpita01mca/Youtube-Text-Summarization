@@ -6,7 +6,15 @@ from dotenv import load_dotenv
 
 from langchain_groq import ChatGroq
 from langchain_community.document_loaders import UnstructuredURLLoader
+
 from youtube_transcript_api import YouTubeTranscriptApi
+from youtube_transcript_api._errors import (
+    TranscriptsDisabled,
+    NoTranscriptFound,
+    VideoUnavailable
+)
+
+import yt_dlp
 
 # -------------------------
 # ENV
@@ -25,7 +33,6 @@ url = st.text_input("Enter YouTube or Website URL")
 def get_llm():
     return ChatGroq(
         model="llama-3.1-8b-instant",
-        api_key=os.getenv("GROQ_API_KEY"),
         temperature=0.2
     )
 
@@ -33,45 +40,83 @@ def get_llm():
 # HELPERS
 # -------------------------
 def get_video_id(url):
-    match = re.search(r"(?:v=|youtu\.be/)([a-zA-Z0-9_-]+)", url)
-    return match.group(1) if match else None
+    patterns = [
+        r"v=([a-zA-Z0-9_-]{11})",
+        r"youtu\.be/([a-zA-Z0-9_-]{11})",
+        r"youtube\.com/embed/([a-zA-Z0-9_-]{11})"
+    ]
 
-
-def summarize_text(llm, text):
-    prompt = f"""
-You are a strict summarizer.
-
-RULES:
-- Use ONLY provided text
-- Do NOT hallucinate
-
-TASK:
-Write a bullet-point summary (5–8 points).
-
-TEXT:
-{text}
-"""
-    return llm.invoke(prompt).content
+    for p in patterns:
+        match = re.search(p, url)
+        if match:
+            return match.group(1)
+    return None
 
 
 # -------------------------
-# TRANSCRIPT ONLY (CLOUD SAFE)
+# PRIMARY TRANSCRIPT METHOD
 # -------------------------
-def get_transcript(url):
+def get_transcript_api(video_id):
     try:
-        video_id = get_video_id(url)
-        if not video_id:
-            return None
+        transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
 
-        data = YouTubeTranscriptApi.get_transcript(video_id)
+        try:
+            transcript = transcript_list.find_transcript(['en'])
+        except:
+            transcript = next(iter(transcript_list))
+
+        data = transcript.fetch()
         return " ".join([t["text"] for t in data])
 
-    except:
+    except (TranscriptsDisabled, NoTranscriptFound, VideoUnavailable):
+        return None
+    except Exception:
         return None
 
 
 # -------------------------
-# WEBSITE
+# FALLBACK (Streamlit Cloud SAFE)
+# -------------------------
+def get_transcript_fallback(url):
+    try:
+        ydl_opts = {
+            "skip_download": True,
+            "quiet": True,
+            "writesubtitles": True,
+            "writeautomaticsub": True,
+            "subtitleslangs": ["en"]
+        }
+
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=False)
+
+        caps = info.get("automatic_captions") or info.get("subtitles")
+
+        if not caps or "en" not in caps:
+            return None
+
+        segments = caps["en"]
+        return " ".join([s.get("text", "") for s in segments])
+
+    except Exception:
+        return None
+
+
+def get_transcript(url):
+    video_id = get_video_id(url)
+    if not video_id:
+        return None
+
+    text = get_transcript_api(video_id)
+
+    if not text:
+        text = get_transcript_fallback(url)
+
+    return text
+
+
+# -------------------------
+# WEBSITE LOADER
 # -------------------------
 def load_website(url):
     loader = UnstructuredURLLoader(
@@ -84,12 +129,33 @@ def load_website(url):
 
 
 # -------------------------
+# SUMMARIZER
+# -------------------------
+def summarize_text(llm, text):
+    prompt = f"""
+You are a strict summarizer.
+
+RULES:
+- Use ONLY provided text
+- Do NOT add external knowledge
+- Do NOT hallucinate
+
+TASK:
+Write 5–8 bullet points summarizing the content.
+
+TEXT:
+{text}
+"""
+    return llm.invoke(prompt).content
+
+
+# -------------------------
 # MAIN
 # -------------------------
 if st.button("Summarize"):
 
     if not url:
-        st.error("Enter URL")
+        st.error("Enter a URL")
         st.stop()
 
     if not validators.url(url):
@@ -108,13 +174,14 @@ if st.button("Summarize"):
         text = get_transcript(url)
 
         if not text:
-            st.error("❌ No transcript available for this video")
+            st.error("❌ No transcript available (even fallback failed)")
             st.stop()
 
     # -------------------------
     # WEBSITE
     # -------------------------
     else:
+        st.info("Loading website...")
         text = load_website(url)
 
     # -------------------------
@@ -127,9 +194,13 @@ if st.button("Summarize"):
     text = text[:12000]
 
     st.write("### 🔍 Preview")
-    st.text_area("", text[:1000], height=200)
+    st.text_area("Content preview", text[:1000], height=200)
 
-    summary = summarize_text(llm, text)
+    # -------------------------
+    # SUMMARY
+    # -------------------------
+    with st.spinner("Summarizing..."):
+        summary = summarize_text(llm, text)
 
     st.success("✅ Summary Generated")
     st.write(summary)
