@@ -7,6 +7,7 @@ from dotenv import load_dotenv
 from langchain_groq import ChatGroq
 from langchain_community.document_loaders import UnstructuredURLLoader
 from youtube_transcript_api import YouTubeTranscriptApi
+from youtube_transcript_api._errors import TranscriptsDisabled, NoTranscriptFound, VideoUnavailable
 
 # -------------------------
 # ENV
@@ -62,27 +63,34 @@ TEXT:
 
 
 # -------------------------
-# YOUTUBE TRANSCRIPT
+# YOUTUBE TRANSCRIPT (ROBUST)
 # -------------------------
 def get_transcript(url):
     try:
         video_id = get_video_id(url)
-
         if not video_id:
             return "ERROR"
 
-        transcript = YouTubeTranscriptApi.get_transcript(video_id)
+        transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
 
-        text = " ".join([t["text"] for t in transcript])
-        return text.strip()
+        try:
+            transcript = transcript_list.find_manually_created_transcript(['en'])
+        except:
+            transcript = transcript_list.find_generated_transcript(['en'])
 
-    except Exception as e:
-        st.warning("⚠️ Transcript not available")
+        data = transcript.fetch()
+        text = " ".join([t["text"] for t in data])
+
+        return text
+
+    except (TranscriptsDisabled, NoTranscriptFound, VideoUnavailable):
+        return "ERROR"
+    except Exception:
         return "ERROR"
 
 
 # -------------------------
-# WEBSITE
+# WEBSITE LOADER
 # -------------------------
 def load_website(url):
     loader = UnstructuredURLLoader(
@@ -95,7 +103,7 @@ def load_website(url):
 
 
 # -------------------------
-# MAIN
+# MAIN APP
 # -------------------------
 if st.button("Summarize"):
 
@@ -131,7 +139,7 @@ if st.button("Summarize"):
         # VALIDATION
         # -------------------------
         if not text or len(text) < 50:
-            st.error("No usable content")
+            st.error("No usable content found")
             st.stop()
 
         text = clean_text(text)[:12000]
