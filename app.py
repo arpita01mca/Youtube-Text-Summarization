@@ -1,7 +1,5 @@
 import os
 import re
-import tempfile
-import subprocess
 import streamlit as st
 import validators
 from dotenv import load_dotenv
@@ -39,10 +37,6 @@ def get_video_id(url):
     return match.group(1) if match else None
 
 
-def clean_text(text):
-    return re.sub(r"\s+", " ", text).strip()
-
-
 def summarize_text(llm, text):
     prompt = f"""
 You are a strict summarizer.
@@ -61,7 +55,7 @@ TEXT:
 
 
 # -------------------------
-# 1. TRY TRANSCRIPT
+# TRANSCRIPT ONLY (CLOUD SAFE)
 # -------------------------
 def get_transcript(url):
     try:
@@ -73,37 +67,6 @@ def get_transcript(url):
         return " ".join([t["text"] for t in data])
 
     except:
-        return None
-
-
-# -------------------------
-# 2. WHISPER FALLBACK (yt-dlp)
-# -------------------------
-def get_audio_transcript(url):
-    try:
-        import whisper
-
-        tmp_dir = tempfile.mkdtemp()
-        audio_path = os.path.join(tmp_dir, "audio.mp3")
-
-        cmd = [
-            "yt-dlp",
-            "-f", "bestaudio",
-            "--extract-audio",
-            "--audio-format", "mp3",
-            "-o", audio_path,
-            url
-        ]
-
-        subprocess.run(cmd, check=True)
-
-        model = whisper.load_model("base")
-        result = model.transcribe(audio_path)
-
-        return result["text"]
-
-    except Exception as e:
-        st.error(f"Whisper failed: {e}")
         return None
 
 
@@ -134,20 +97,19 @@ if st.button("Summarize"):
         st.stop()
 
     llm = get_llm()
-    text = None
 
     # -------------------------
-    # YOUTUBE PIPELINE
+    # YOUTUBE
     # -------------------------
     if "youtube.com" in url or "youtu.be" in url:
 
-        st.info("Trying transcript API...")
+        st.info("Fetching transcript...")
 
         text = get_transcript(url)
 
         if not text:
-            st.warning("Transcript not available → using Whisper fallback...")
-            text = get_audio_transcript(url)
+            st.error("❌ No transcript available for this video")
+            st.stop()
 
     # -------------------------
     # WEBSITE
@@ -162,17 +124,11 @@ if st.button("Summarize"):
         st.error("No usable content found")
         st.stop()
 
-    text = clean_text(text)[:12000]
+    text = text[:12000]
 
-    # -------------------------
-    # PREVIEW
-    # -------------------------
     st.write("### 🔍 Preview")
     st.text_area("", text[:1000], height=200)
 
-    # -------------------------
-    # SUMMARY
-    # -------------------------
     summary = summarize_text(llm, text)
 
     st.success("✅ Summary Generated")
