@@ -1,13 +1,13 @@
 import os
-import re
 import streamlit as st
 import validators
+import yt_dlp
+import whisper
 import requests
 from bs4 import BeautifulSoup
 from dotenv import load_dotenv
 
 from langchain_groq import ChatGroq
-from youtube_transcript_api import YouTubeTranscriptApi
 
 # -------------------------
 # ENV
@@ -32,45 +32,39 @@ def get_llm():
 
 
 # -------------------------
-# YOUTUBE ID
+# LOAD WHISPER MODEL (cached)
 # -------------------------
-def get_video_id(url):
-    patterns = [
-        r"v=([a-zA-Z0-9_-]{11})",
-        r"youtu\.be/([a-zA-Z0-9_-]{11})",
-        r"embed/([a-zA-Z0-9_-]{11})"
-    ]
-
-    for p in patterns:
-        match = re.search(p, url)
-        if match:
-            return match.group(1)
-
-    return None
+@st.cache_resource
+def load_model():
+    return whisper.load_model("base")
 
 
 # -------------------------
-# YOUTUBE TRANSCRIPT (SAFE)
+# YOUTUBE TRANSCRIPTION (WHISPER)
 # -------------------------
-def get_youtube_text(url):
+def transcribe_youtube(url):
     try:
-        video_id = get_video_id(url)
-        if not video_id:
-            return None
+        audio_file = "audio.mp3"
 
-        transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
+        ydl_opts = {
+            "format": "bestaudio/best",
+            "outtmpl": "audio.%(ext)s",
+            "quiet": True,
+        }
 
-        try:
-            transcript = transcript_list.find_transcript(['en'])
-        except:
-            transcript = next(iter(transcript_list))
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            ydl.download([url])
 
-        data = transcript.fetch()
+        model = load_model()
+        result = model.transcribe(audio_file)
 
-        return " ".join([t["text"] for t in data])
+        if os.path.exists(audio_file):
+            os.remove(audio_file)
+
+        return result["text"]
 
     except Exception as e:
-        print("Transcript error:", e)
+        st.error(f"Transcription error: {e}")
         return None
 
 
@@ -81,11 +75,9 @@ def get_website_text(url):
     try:
         r = requests.get(url, headers={"User-Agent": "Mozilla/5.0"})
         soup = BeautifulSoup(r.text, "html.parser")
-
         return soup.get_text(separator=" ", strip=True)
-
     except Exception as e:
-        print("Website error:", e)
+        st.error(f"Website error: {e}")
         return None
 
 
@@ -115,7 +107,7 @@ TEXT:
 if st.button("Summarize"):
 
     if not url:
-        st.error("Enter a URL")
+        st.error("Please enter a URL")
         st.stop()
 
     if not validators.url(url):
@@ -123,7 +115,6 @@ if st.button("Summarize"):
         st.stop()
 
     llm = get_llm()
-
     text = None
 
     # -------------------------
@@ -131,20 +122,19 @@ if st.button("Summarize"):
     # -------------------------
     if "youtube.com" in url or "youtu.be" in url:
 
-        st.info("Fetching YouTube transcript...")
+        st.info("🎧 Downloading & transcribing video (30–60s)...")
 
-        text = get_youtube_text(url)
+        text = transcribe_youtube(url)
 
         if not text:
-            st.error("❌ No transcript available for this video")
+            st.error("❌ Could not transcribe video")
             st.stop()
 
     # -------------------------
     # WEBSITE
     # -------------------------
     else:
-        st.info("Fetching website content...")
-
+        st.info("🌐 Fetching website content...")
         text = get_website_text(url)
 
         if not text:
@@ -160,7 +150,7 @@ if st.button("Summarize"):
 
     text = text[:12000]
 
-    st.write("### Preview")
+    st.write("### 🔍 Preview")
     st.text_area("Content", text[:1000], height=200)
 
     # -------------------------
@@ -169,5 +159,5 @@ if st.button("Summarize"):
     with st.spinner("Summarizing..."):
         summary = summarize(llm, text)
 
-    st.success("Done")
+    st.success("✅ Summary Generated")
     st.write(summary)
