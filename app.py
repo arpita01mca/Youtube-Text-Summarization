@@ -2,22 +2,14 @@ import os
 import re
 import streamlit as st
 import validators
+import yt_dlp
+import whisper
 from dotenv import load_dotenv
 
 from langchain_groq import ChatGroq
-from langchain_community.document_loaders import UnstructuredURLLoader
-
-from youtube_transcript_api import YouTubeTranscriptApi
-from youtube_transcript_api._errors import (
-    TranscriptsDisabled,
-    NoTranscriptFound,
-    VideoUnavailable
-)
-
-import yt_dlp
 
 # -------------------------
-# ENV
+# CONFIG
 # -------------------------
 load_dotenv()
 
@@ -39,138 +31,79 @@ def get_llm():
 
 
 # -------------------------
-# VIDEO ID
+# VIDEO DOWNLOAD + TRANSCRIBE (WHISPER)
 # -------------------------
-def get_video_id(url):
-    patterns = [
-        r"v=([a-zA-Z0-9_-]{11})",
-        r"youtu\.be/([a-zA-Z0-9_-]{11})",
-        r"youtube\.com/embed/([a-zA-Z0-9_-]{11})"
-    ]
-
-    for p in patterns:
-        match = re.search(p, url)
-        if match:
-            return match.group(1)
-
-    return None
+@st.cache_resource
+def load_whisper():
+    return whisper.load_model("base")
 
 
-# -------------------------
-# METHOD 1: transcript API
-# -------------------------
-def get_transcript_api(video_id):
+def transcribe_video(url):
     try:
-        transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
+        audio_file = "audio.mp3"
 
-        try:
-            transcript = transcript_list.find_transcript(['en'])
-        except:
-            transcript = next(iter(transcript_list))
-
-        data = transcript.fetch()
-        return " ".join([t["text"] for t in data])
-
-    except (TranscriptsDisabled, NoTranscriptFound, VideoUnavailable):
-        return None
-    except Exception:
-        return None
-
-
-# -------------------------
-# METHOD 2: yt-dlp fallback (IMPORTANT FIX)
-# -------------------------
-def get_transcript_fallback(url):
-    try:
         ydl_opts = {
+            "format": "bestaudio/best",
+            "outtmpl": "audio.%(ext)s",
             "quiet": True,
-            "skip_download": True,
-            "writesubtitles": True,
-            "writeautomaticsub": True,
-            "subtitleslangs": ["en"],
         }
 
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=False)
+            ydl.download([url])
 
-        subs = info.get("subtitles") or info.get("automatic_captions")
+        model = load_whisper()
+        result = model.transcribe(audio_file)
 
-        if not subs or "en" not in subs:
-            return None
+        if os.path.exists(audio_file):
+            os.remove(audio_file)
 
-        entries = subs["en"]
-
-        text = []
-        for item in entries:
-            if isinstance(item, dict):
-                text.append(item.get("text", ""))
-            else:
-                text.append(str(item))
-
-        return " ".join(text)
+        return result["text"]
 
     except Exception as e:
-        print("yt-dlp error:", e)
+        st.error(f"Transcription error: {e}")
         return None
 
 
 # -------------------------
-# UNIFIED TRANSCRIPT
-# -------------------------
-def get_transcript(url):
-    video_id = get_video_id(url)
-    if not video_id:
-        return None
-
-    text = get_transcript_api(video_id)
-
-    if not text:
-        text = get_transcript_fallback(url)
-
-    return text
-
-
-# -------------------------
-# WEBSITE LOADER
+# WEBSITE LOADER (simple fallback)
 # -------------------------
 def load_website(url):
-    loader = UnstructuredURLLoader(
-        urls=[url],
-        ssl_verify=False,
-        headers={"User-Agent": "Mozilla/5.0"}
-    )
-    docs = loader.load()
-    return " ".join([d.page_content for d in docs])
+    import requests
+    from bs4 import BeautifulSoup
+
+    r = requests.get(url, headers={"User-Agent": "Mozilla/5.0"})
+    soup = BeautifulSoup(r.text, "html.parser")
+
+    return soup.get_text(separator=" ", strip=True)
 
 
 # -------------------------
 # SUMMARIZER
 # -------------------------
-def summarize_text(llm, text):
+def summarize(llm, text):
     prompt = f"""
 You are a strict summarizer.
 
-RULES:
-- Use ONLY provided text
-- Do NOT add external knowledge
-- Do NOT hallucinate
+Rules:
+- Only use provided text
+- Do not hallucinate
 
-TASK:
-Write 5–8 bullet points summarizing the content.
+Task:
+Give 5–8 bullet points summary.
 
-TEXT:
+Text:
 {text}
 """
     return llm.invoke(prompt).content
 
 
 # -------------------------
-# MAIN APP
+# MAIN
 # -------------------------
 if st.button("Summarize"):
 
     if not url:
-        st.error("Please enter a URL")
+        st.error("Enter URL")
         st.stop()
 
     if not validators.url(url):
@@ -184,12 +117,12 @@ if st.button("Summarize"):
     # -------------------------
     if "youtube.com" in url or "youtu.be" in url:
 
-        st.info("Fetching transcript...")
+        st.info("Downloading & transcribing video (this may take ~30–60s)...")
 
-        text = get_transcript(url)
+        text = transcribe_video(url)
 
-        if not text or len(text.strip()) < 20:
-            st.error("❌ No transcript available for this video")
+        if not text:
+            st.error("❌ Could not transcribe video")
             st.stop()
 
     # -------------------------
@@ -200,7 +133,7 @@ if st.button("Summarize"):
         text = load_website(url)
 
     # -------------------------
-    # FINAL CHECK
+    # VALIDATION
     # -------------------------
     if not text or len(text.strip()) < 20:
         st.error("No usable content found")
@@ -208,14 +141,11 @@ if st.button("Summarize"):
 
     text = text[:12000]
 
-    st.write("### 🔍 Preview")
-    st.text_area("Content preview", text[:1000], height=200)
+    st.write("### Preview")
+    st.text_area("Content", text[:1000], height=200)
 
-    # -------------------------
-    # SUMMARY
-    # -------------------------
     with st.spinner("Summarizing..."):
-        summary = summarize_text(llm, text)
+        summary = summarize(llm, text)
 
-    st.success("✅ Summary Generated")
+    st.success("Done")
     st.write(summary)
